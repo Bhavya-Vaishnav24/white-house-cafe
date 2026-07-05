@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react'
 import {
   ShoppingBag, Plus, Minus, Trash2, MapPin, Search, Phone,
-  LogOut, Bell, Clock, CreditCard, CheckCircle,
-  ArrowRight, Lock, Filter, X, ExternalLink, Flame, Star
+  Bell, Clock, CheckCircle,
+  ArrowRight, Lock, X, ExternalLink, Flame, Star
 } from 'lucide-react'
 import {
   supabase
@@ -279,19 +279,7 @@ const playChime = () => {
   }
 }
 
-// Parses latitude/longitude from google maps link q=lat,lng
-const getCoordinatesFromUrl = (url: string) => {
-  if (!url) return null
-  try {
-    const match = url.match(/q=([-+]?\d*\.\d+|\d+),([-+]?\d*\.\d+|\d+)/)
-    if (match && match[1] && match[2]) {
-      return { lat: parseFloat(match[1]), lng: parseFloat(match[2]) }
-    }
-  } catch (e) {
-    console.error('Error parsing coordinates from maps url:', e)
-  }
-  return null
-}
+// getCoordinatesFromUrl commented out as unused
 
 export default function App() {
   // Navigation: 'customer' | 'admin'
@@ -341,9 +329,9 @@ export default function App() {
   const [loadingOrders, setLoadingOrders] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('All')
-  const [paymentFilter, setPaymentFilter] = useState('All')
   const [selectedOrder, setSelectedOrder] = useState<SupabaseOrder | null>(null)
   const [newOrderToast, setNewOrderToast] = useState<{ id: string; name: string } | null>(null)
+  const [statusToast, setStatusToast] = useState<string | null>(null)
 
   // Webhook and connection integrations from build environment variables
   const n8nWebhookUrl = import.meta.env.VITE_N8N_WEBHOOK_URL || ''
@@ -456,6 +444,22 @@ export default function App() {
         .eq('id', orderId)
 
       if (error) throw error
+
+      if (statusType === 'order') {
+        let msg = `Order #${orderId} Status Updated`
+        if (newValue === 'preparing') msg = `Order #${orderId} Accepted`
+        if (newValue === 'out_for_delivery') msg = `Order #${orderId} Out for Delivery`
+        if (newValue === 'delivered') msg = `Order #${orderId} Delivered`
+        if (newValue === 'cancelled') msg = `Order #${orderId} Cancelled`
+        
+        setStatusToast(msg)
+        playChime()
+        setTimeout(() => setStatusToast(null), 4000)
+      } else {
+        setStatusToast(`Order #${orderId} Payment status: ${newValue.toUpperCase()}`)
+        playChime()
+        setTimeout(() => setStatusToast(null), 4000)
+      }
     } catch (err: any) {
       alert('Error updating status: ' + err.message)
     }
@@ -519,10 +523,9 @@ export default function App() {
 
   // Total Calculations
   const subtotal = cart.reduce((sum, item) => sum + (item.activePrice * item.quantity), 0)
-  const packagingFee = cart.length > 0 ? 5 : 0
-  const total = subtotal + packagingFee
-
   const cartItemsCount = cart.reduce((sum, item) => sum + item.quantity, 0)
+  const packagingFee = cartItemsCount * 5
+  const total = subtotal + packagingFee
 
   // Location capturing handler
   const handleGetLocation = () => {
@@ -709,18 +712,90 @@ export default function App() {
     }
   }, [placedOrder])
 
+  // Helper calculations for dashboard statistics
+  const getTodayOrders = () => {
+    const todayStr = new Date().toLocaleDateString()
+    return orders.filter(o => {
+      if (!o.created_at) return false
+      return new Date(o.created_at).toLocaleDateString() === todayStr
+    })
+  }
+
+  const getRevenueForLastDays = (days: number) => {
+    const cutoff = new Date()
+    cutoff.setDate(cutoff.getDate() - days)
+    cutoff.setHours(0, 0, 0, 0)
+    return orders
+      .filter(o => {
+        if (!o.created_at) return false
+        const orderDate = new Date(o.created_at)
+        return orderDate >= cutoff && o.order_status?.toLowerCase() !== 'cancelled'
+      })
+      .reduce((sum, o) => sum + (o.total || 0), 0)
+  }
+
+  const renderOrderSummary = (order: SupabaseOrder) => {
+    if (order.items && Array.isArray(order.items)) {
+      const foodItems = order.items.filter((i: any) => !i.isAddressMetadata)
+      return (
+        <div className="order-summary-block">
+          {foodItems.map((cartItem: any, idx: number) => {
+            const qty = cartItem.quantity || 1
+            const name = cartItem.item?.name || 'Item'
+            const price = cartItem.activePrice || cartItem.item?.price || 0
+            return (
+              <div key={idx} className="order-summary-item">
+                <span>{qty}x {name}</span>
+                <span>₹{price * qty}</span>
+              </div>
+            )
+          })}
+          <div className="order-summary-item">
+            <span>Packaging</span>
+            <span>₹{order.packaging || 0}</span>
+          </div>
+          <div className="order-summary-item total-line">
+            <span>Total</span>
+            <span>₹{order.total}</span>
+          </div>
+        </div>
+      )
+    }
+
+    return (
+      <div className="order-summary-block">
+        <div style={{ whiteSpace: 'pre-line' }}>{order.item_summary}</div>
+        <div className="order-summary-item" style={{ marginTop: '0.5rem' }}>
+          <span>Packaging</span>
+          <span>₹{order.packaging || 0}</span>
+        </div>
+        <div className="order-summary-item total-line">
+          <span>Total</span>
+          <span>₹{order.total}</span>
+        </div>
+      </div>
+    )
+  }
+
   // Filter & Search Orders (Admin Dashboard)
   const filteredOrders = orders.filter(order => {
-    const matchesSearch =
-      order.customer_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      order.phone.includes(searchQuery) ||
-      order.item_summary.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      order.id.toString().includes(searchQuery)
+    const nameMatch = order.customer_name?.toLowerCase() || ''
+    const phoneMatch = order.phone || ''
+    const summaryMatch = order.item_summary?.toLowerCase() || ''
+    const idMatch = order.id?.toString() || ''
+    
+    const query = searchQuery.toLowerCase().trim()
+    const matchesSearch = !query || 
+      nameMatch.includes(query) ||
+      phoneMatch.includes(query) ||
+      summaryMatch.includes(query) ||
+      idMatch.includes(query)
 
-    const matchesStatus = statusFilter === 'All' || order.order_status === statusFilter.toLowerCase()
-    const matchesPayment = paymentFilter === 'All' || order.payment_status === paymentFilter.toLowerCase()
+    const normalizedFilter = statusFilter.toLowerCase().replace(/ /g, '_')
+    const orderStatusNormalized = (order.order_status || 'pending').toLowerCase()
+    const matchesStatus = statusFilter === 'All' || statusFilter === 'All Orders' || orderStatusNormalized === normalizedFilter
 
-    return matchesSearch && matchesStatus && matchesPayment
+    return matchesSearch && matchesStatus
   })
 
   // Filter menu items by Category + Veg + Search (Customer Digital Menu)
@@ -807,7 +882,7 @@ export default function App() {
                   <div className="hero-badges-row">
                     <span className="hero-badge-pill rating"><Star size={12} fill="currentColor" /> 4.7 (2.1k)</span>
                     <span className="hero-badge-pill"><Clock size={12} /> 20–30 min</span>
-                    <span className="hero-badge-pill">Packaging ₹5 flat</span>
+                    <span className="hero-badge-pill">Packaging ₹5/item</span>
                   </div>
                   <button className="btn btn-primary start-ordering-btn" style={{ padding: '0.85rem 2.25rem', fontSize: '0.95rem', fontWeight: 'bold' }} onClick={handleScrollToMenu}>
                     Start Ordering
@@ -1029,7 +1104,7 @@ export default function App() {
                       <span>₹{subtotal}</span>
                     </div>
                     <div className="summary-row">
-                      <span>Parcel Charge</span>
+                      <span>Parcel Charge (₹5/item)</span>
                       <span>₹{packagingFee}</span>
                     </div>
                     <div className="summary-row total">
@@ -1249,7 +1324,7 @@ export default function App() {
                       <span>₹{subtotal}</span>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-                      <span>Parcel Charge (₹5):</span>
+                      <span>Parcel Charge (₹5 per item):</span>
                       <span>₹{packagingFee}</span>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1rem', fontWeight: 'bold', color: '#fff', marginBottom: '1.25rem' }}>
@@ -1348,320 +1423,409 @@ export default function App() {
             </div>
           ) : (
             /* Admin Dashboard Layout */
-            <div className="dashboard-grid">
-              {/* Sidebar */}
-              <aside className="sidebar">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '2.5rem' }}>
-                  <div style={{ width: '36px', height: '36px', borderRadius: '8px', backgroundColor: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '1rem', fontFamily: 'var(--font-serif)' }}>W</div>
-                  <div>
-                    <h2 className="brand-title" style={{ fontSize: '1rem' }}>White House</h2>
-                    <p style={{ fontSize: '0.6rem', color: 'var(--accent)', fontWeight: 'bold', marginTop: '-2px', textTransform: 'uppercase' }}>Console</p>
+            <div className="admin-dashboard-container">
+              {/* Header */}
+              <header className="dashboard-header-block">
+                <div className="brand-badge-pill">
+                  <ShoppingBag size={10} /> WHITE HOUSE CAFE
+                </div>
+                <h1 className="dashboard-main-title">Mobile Order Dashboard</h1>
+                <p className="dashboard-subtitle">
+                  Optimized for phone use with tap-to-call and tap-to-open Google Maps.
+                </p>
+              </header>
+
+              {/* Stats Cards Section */}
+              <section className="stats-grid-container">
+                {/* Card 1: Total Orders Today */}
+                <div className="dashboard-stat-card">
+                  <div className="stat-card-top">
+                    <span className="stat-card-lbl">Total Orders Today</span>
+                    <div className="stat-card-icon-wrapper">
+                      <ShoppingBag size={14} />
+                    </div>
+                  </div>
+                  <div className="stat-card-val">
+                    {getTodayOrders().length}
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', flexGrow: 1 }}>
-                  <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem', fontWeight: 'bold', textTransform: 'uppercase', paddingLeft: '0.5rem', marginBottom: '0.5rem' }}>Main</div>
-                  <button className="btn btn-secondary" style={{ justifyContent: 'flex-start', backgroundColor: 'rgba(255, 255, 255, 0.04)', borderColor: 'var(--border-focus)' }}>
-                    <Bell size={16} /> Live Orders
-                  </button>
+                {/* Card 2: Pending Orders */}
+                <div className="dashboard-stat-card">
+                  <div className="stat-card-top">
+                    <span className="stat-card-lbl">Pending Orders</span>
+                    <div className="stat-card-icon-wrapper pending">
+                      <Clock size={14} />
+                    </div>
+                  </div>
+                  <div className="stat-card-val">
+                    {orders.filter(o => !o.order_status || o.order_status.toLowerCase() === 'pending').length}
+                  </div>
                 </div>
 
-                <div style={{ borderTop: '1px solid var(--border)', paddingTop: '1.5rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: 'var(--success)' }}></div>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }} title={adminSession.user.email}>{adminSession.user.email.split('@')[0]} (Admin)</span>
+                {/* Card 3: Delivered Orders */}
+                <div className="dashboard-stat-card">
+                  <div className="stat-card-top">
+                    <span className="stat-card-lbl">Delivered Orders</span>
+                    <div className="stat-card-icon-wrapper delivered">
+                      <CheckCircle size={14} />
+                    </div>
+                  </div>
+                  <div className="stat-card-val">
+                    {orders.filter(o => o.order_status?.toLowerCase() === 'delivered').length}
+                  </div>
+                </div>
+
+                {/* Card 4: Total Revenue Today */}
+                <div className="dashboard-stat-card">
+                  <div className="stat-card-top">
+                    <span className="stat-card-lbl">Total Revenue Today</span>
+                    <div className="stat-card-icon-wrapper">
+                      <span style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>₹</span>
+                    </div>
+                  </div>
+                  <div className="stat-card-val">
+                    ₹{getTodayOrders().reduce((sum, o) => sum + (o.total || 0), 0).toLocaleString('en-IN')}
+                  </div>
+                </div>
+
+                {/* Card 5: Weekly Revenue */}
+                <div className="dashboard-stat-card">
+                  <div className="stat-card-top">
+                    <span className="stat-card-lbl">Weekly Revenue</span>
+                    <div className="stat-card-icon-wrapper">
+                      <span style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>₹</span>
+                    </div>
+                  </div>
+                  <div className="stat-card-val">
+                    ₹{getRevenueForLastDays(7).toLocaleString('en-IN')}
+                  </div>
+                  <div className="stat-card-desc">Tap to open chart</div>
+                </div>
+
+                {/* Card 6: Monthly Revenue */}
+                <div className="dashboard-stat-card">
+                  <div className="stat-card-top">
+                    <span className="stat-card-lbl">Monthly Revenue</span>
+                    <div className="stat-card-icon-wrapper">
+                      <span style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>₹</span>
+                    </div>
+                  </div>
+                  <div className="stat-card-val">
+                    ₹{getRevenueForLastDays(30).toLocaleString('en-IN')}
+                  </div>
+                  <div className="stat-card-desc">Tap to open chart</div>
+                </div>
+              </section>
+
+              {/* Search & Filters */}
+              <section className="control-bar">
+                <div className="search-wrapper">
+                  <Search size={16} className="search-input-icon" />
+                  <input
+                    type="text"
+                    className="search-input-field"
+                    placeholder="Search by ID, name, or phone number..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                </div>
+
+                {/* Filters slider */}
+                <div className="filter-slider">
+                  {['All', 'Pending', 'Preparing', 'Out for Delivery', 'Delivered', 'Cancelled'].map(filter => (
+                    <button
+                      key={filter}
+                      className={`filter-slider-btn ${statusFilter === filter ? 'active' : ''}`}
+                      onClick={() => setStatusFilter(filter)}
+                    >
+                      {filter}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Refresh/Logout row */}
+                <div className="refresh-action-row">
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      className="btn btn-secondary"
+                      style={{ padding: '0.4rem 0.8rem', fontSize: '0.75rem', height: '32px' }}
+                      onClick={fetchOrders}
+                      disabled={loadingOrders}
+                    >
+                      {loadingOrders ? 'Refreshing...' : 'Refresh Feed'}
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      style={{ padding: '0.4rem 0.8rem', fontSize: '0.75rem', height: '32px' }}
+                      onClick={() => {
+                        window.history.pushState({}, '', '/')
+                        setView('customer')
+                      }}
+                    >
+                      Menu <ExternalLink size={12} />
+                    </button>
                   </div>
                   <button
                     className="btn btn-secondary"
-                    style={{ width: '100%', gap: '0.5rem', justifyContent: 'center', color: 'var(--danger)' }}
+                    style={{ padding: '0.4rem 0.8rem', fontSize: '0.75rem', height: '32px', color: 'var(--danger)', borderColor: 'rgba(239, 68, 68, 0.2)' }}
                     onClick={handleAdminLogout}
                   >
-                    <LogOut size={16} /> Log Out
+                    Log Out
                   </button>
                 </div>
-              </aside>
+              </section>
 
-              {/* Main Console Content */}
-              <main className="dashboard-main">
-                {/* Dashboard Header */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2.5rem' }}>
-                  <div>
-                    <h1 style={{ fontSize: '1.8rem', fontWeight: '800' }}>Active Order Feed</h1>
-                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Real-time synchronization active</p>
-                  </div>
-                  <div style={{ display: 'flex', gap: '0.75rem' }}>
-                    <button className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }} onClick={() => {
-                      window.history.pushState({}, '', '/')
-                      setView('customer')
-                    }}>
-                      Customer App <ExternalLink size={14} />
-                    </button>
-                    <button className="btn btn-primary" onClick={fetchOrders}>
-                      Refresh Feed
-                    </button>
-                  </div>
-                </div>
-
-                {/* Filter and Search Bar */}
-                <div className="filter-bar">
-                  <div className="search-input-wrapper">
-                    <Search size={16} className="search-icon" />
-                    <input
-                      type="text"
-                      className="form-input search-input"
-                      placeholder="Search orders (ID, customer name, summary...)"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                    />
-                  </div>
-
-                  <div className="filters-group">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginRight: '0.5rem' }}>
-                      <Filter size={14} style={{ color: 'var(--text-muted)' }} />
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Order:</span>
-                    </div>
-                    {['All', 'New', 'Preparing', 'Ready', 'Delivered', 'Cancelled'].map(filter => (
-                      <button
-                        key={filter}
-                        className={`filter-btn ${statusFilter === filter ? 'active' : ''}`}
-                        onClick={() => setStatusFilter(filter)}
-                      >
-                        {filter}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="filters-group">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginRight: '0.5rem' }}>
-                      <CreditCard size={14} style={{ color: 'var(--text-muted)' }} />
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Payment:</span>
-                    </div>
-                    {['All', 'Pending', 'Paid', 'Failed'].map(filter => (
-                      <button
-                        key={filter}
-                        className={`filter-btn ${paymentFilter === filter ? 'active' : ''}`}
-                        onClick={() => setPaymentFilter(filter)}
-                      >
-                        {filter}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Order Table */}
-                <div className="table-container">
-                  {loadingOrders ? (
-                    <div style={{ padding: '4rem 0', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
-                      <div className="flex-center" style={{ width: '40px', height: '40px', borderRadius: '50%', border: '2px solid var(--border)', borderTopColor: 'var(--accent)', animation: 'spin 1s linear infinite', marginBottom: '1rem' }} />
-                      <span>Loading incoming orders...</span>
-                    </div>
-                  ) : filteredOrders.length === 0 ? (
-                    <div style={{ padding: '4rem 0', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                      <Bell size={48} style={{ opacity: 0.15, marginBottom: '1rem' }} />
-                      <p>No orders found matching the filter criteria.</p>
-                    </div>
-                  ) : (
-                    <table className="order-table">
-                      <thead>
-                        <tr>
-                          <th>ID</th>
-                          <th>Time</th>
-                          <th>Customer</th>
-                          <th>Phone</th>
-                          <th>Item Summary</th>
-                          <th>Total</th>
-                          <th>Payment Status</th>
-                          <th>Order Status</th>
-                          <th>Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredOrders.map(order => (
-                          <tr key={order.id} style={{ cursor: 'pointer' }} onClick={() => setSelectedOrder(order)}>
-                            <td style={{ fontWeight: 'bold' }}>#{order.id}</td>
-                            <td className="order-time">
-                              {new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                              <div style={{ fontSize: '0.65rem' }}>{new Date(order.created_at).toLocaleDateString()}</div>
-                            </td>
-                            <td style={{ fontWeight: '500' }}>{order.customer_name}</td>
-                            <td style={{ fontSize: '0.85rem' }}>{order.phone}</td>
-                            <td>
-                              <div className="order-summary-text" title={order.item_summary}>
-                                {order.item_summary}
-                              </div>
-                            </td>
-                            <td style={{ fontWeight: 'bold', color: 'var(--accent)' }}>₹{order.total}</td>
-                            <td onClick={(e) => e.stopPropagation()}>
-                              <select
-                                className="select-dark"
-                                value={order.payment_status}
-                                onChange={(e) => handleUpdateStatus(order.id, 'payment', e.target.value)}
-                              >
-                                <option value="pending">Pending</option>
-                                <option value="paid">Paid</option>
-                                <option value="failed">Failed</option>
-                              </select>
-                            </td>
-                            <td onClick={(e) => e.stopPropagation()}>
-                              <select
-                                className={`select-dark badge-${order.order_status}`}
-                                value={order.order_status}
-                                onChange={(e) => handleUpdateStatus(order.id, 'order', e.target.value)}
-                                style={{ fontWeight: 'bold' }}
-                              >
-                                <option value="new">New</option>
-                                <option value="preparing">Preparing</option>
-                                <option value="ready">Ready</option>
-                                <option value="delivered">Delivered</option>
-                                <option value="cancelled">Cancelled</option>
-                              </select>
-                            </td>
-                            <td onClick={(e) => e.stopPropagation()}>
-                              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                {order.maps_link ? (
-                                  <a href={order.maps_link} target="_blank" rel="noopener noreferrer" className="btn btn-secondary btn-icon" title="View Map Route" style={{ width: '32px', height: '32px' }}>
-                                    <MapPin size={14} />
-                                  </a>
-                                ) : (
-                                  <div style={{ width: '32px', height: '32px' }} />
-                                )}
-                                <button className="btn btn-secondary btn-icon" style={{ width: '32px', height: '32px' }} onClick={() => setSelectedOrder(order)} title="View Details">
-                                  <ArrowRight size={14} />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-
-                {/* Live sound and Toast alert for new orders */}
-                {newOrderToast && (
-                  <div className="toast">
-                    <Bell size={18} style={{ color: 'var(--accent)', animation: 'bounce 1s infinite' }} />
-                    <div>
-                      <div style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>New Order Received!</div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>#{newOrderToast.id} from {newOrderToast.name}</div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Detailed view Modal */}
-                {selectedOrder && (
-                  <div className="checkout-modal-overlay" onClick={() => setSelectedOrder(null)}>
-                    <div className="checkout-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '600px' }}>
-                      <div className="checkout-header">
-                        <h2 className="brand-title" style={{ fontSize: '1.1rem' }}>Order Details #{selectedOrder.id}</h2>
-                        <button onClick={() => setSelectedOrder(null)} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}>
-                          <X size={20} />
-                        </button>
+              {/* Live Orders Feed */}
+              <section className="orders-feed-container">
+                {loadingOrders ? (
+                  // Loading skeleton (3 cards)
+                  Array.from({ length: 3 }).map((_, idx) => (
+                    <div key={idx} className="order-glass-card" style={{ gap: '0.75rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <div className="skeleton-box" style={{ width: '80px', height: '16px' }} />
+                        <div className="skeleton-box" style={{ width: '60px', height: '16px' }} />
                       </div>
-                      <div className="checkout-body">
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem', paddingBottom: '1.25rem', borderBottom: '1px solid var(--border)' }}>
-                          <div>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Customer Details</span>
-                            <div style={{ fontWeight: 'bold', fontSize: '1.05rem', marginTop: '0.2rem' }}>{selectedOrder.customer_name}</div>
-                            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.25rem' }}>
-                              <Phone size={12} /> {selectedOrder.phone}
-                            </div>
-                          </div>
-                          <div>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Delivery Context</span>
-                            <div style={{ fontSize: '0.8rem', marginTop: '0.2rem' }}>Placed: {new Date(selectedOrder.created_at).toLocaleString()}</div>
-                            {selectedOrder.maps_link ? (
-                              <>
-                                <a href={selectedOrder.maps_link} target="_blank" rel="noopener noreferrer" className="link-maps" style={{ fontSize: '0.8rem', marginTop: '0.25rem' }}>
-                                  <MapPin size={12} /> View Google Maps Link <ExternalLink size={10} />
-                                </a>
-                                {(() => {
-                                  const coords = getCoordinatesFromUrl(selectedOrder.maps_link)
-                                  return coords ? (
-                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                                      Coordinates: {coords.lat.toFixed(6)}, {coords.lng.toFixed(6)}
-                                    </div>
-                                  ) : null
-                                })()}
-                              </>
-                            ) : (
-                              <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>No Location details provided</div>
-                            )}
-                          </div>
+                      <div className="skeleton-box" style={{ width: '150px', height: '20px' }} />
+                      <div className="skeleton-box" style={{ width: '100px', height: '14px' }} />
+                      <div className="skeleton-box" style={{ width: '100%', height: '80px', borderRadius: '8px' }} />
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <div className="skeleton-box" style={{ width: '60px', height: '22px', borderRadius: '50px' }} />
+                        <div className="skeleton-box" style={{ width: '80px', height: '22px', borderRadius: '50px' }} />
+                      </div>
+                    </div>
+                  ))
+                ) : filteredOrders.length === 0 ? (
+                  <div className="empty-state-block">
+                    <ShoppingBag size={36} style={{ color: 'var(--text-muted)' }} />
+                    <p style={{ fontWeight: '500' }}>No orders found</p>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      There are no orders matching your current search or filter criteria.
+                    </p>
+                  </div>
+                ) : (
+                  filteredOrders.map(order => {
+                    const status = order.order_status?.toLowerCase() || 'pending'
+                    const pStatus = order.payment_status?.toLowerCase() || 'pending'
+                    const timeString = new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    const dateString = new Date(order.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })
+                    
+                    return (
+                      <div key={order.id} className="order-glass-card" onClick={() => setSelectedOrder(order)}>
+                        <div className="order-card-row-top">
+                          <span className="order-card-id">Order #{order.id}</span>
+                          <span className="order-card-time">{timeString} • {dateString}</span>
                         </div>
 
-                        <h4 style={{ marginBottom: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Order Items Summary</h4>
-                        <div style={{ backgroundColor: 'var(--bg-tertiary)', borderRadius: '8px', padding: '1rem', marginBottom: '1.25rem' }}>
-                          {selectedOrder.items && Array.isArray(selectedOrder.items) ? (
-                            selectedOrder.items.map((cartItem: any, idx: number) => (
-                              <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', paddingBottom: '0.4rem', marginBottom: '0.4rem', borderBottom: idx < selectedOrder.items.length - 1 ? '1px solid rgba(255, 255, 255, 0.05)' : 'none' }}>
-                                <span>
-                                  {cartItem.quantity} x {cartItem.item?.name || 'Item'}
-                                </span>
-                                <span style={{ fontWeight: 'bold' }}>₹{cartItem.activePrice * cartItem.quantity}</span>
-                              </div>
-                            ))
-                          ) : (
-                            <p style={{ fontSize: '0.85rem' }}>{selectedOrder.item_summary}</p>
+                        <div className="order-card-cust-info" onClick={(e) => e.stopPropagation()}>
+                          <span className="order-card-name">{order.customer_name}</span>
+                          <a href={`tel:${order.phone}`} className="order-card-phone-link">
+                            <Phone size={12} /> {order.phone}
+                          </a>
+                        </div>
+
+                        {/* Order items summary parser */}
+                        {renderOrderSummary(order)}
+
+                        <div className="order-card-badges">
+                          {/* Payment status badge */}
+                          <span className={`badge badge-${pStatus === 'paid' ? 'paid' : pStatus === 'failed' ? 'failed' : 'pending'}`}>
+                            {pStatus === 'paid' ? 'Paid' : pStatus === 'failed' ? 'Failed' : 'Payment: Pending'}
+                          </span>
+                          
+                          {/* Order status badge */}
+                          <span className={`badge badge-${status === 'preparing' ? 'preparing' : status === 'out_for_delivery' ? 'ready' : status === 'delivered' ? 'delivered' : status === 'cancelled' ? 'cancelled' : 'new'}`}>
+                            {status === 'out_for_delivery' ? 'Out for Delivery' : status}
+                          </span>
+                        </div>
+
+                        {/* Order Action Buttons & Phone / Maps buttons */}
+                        <div className="order-card-action-bar" onClick={(e) => e.stopPropagation()}>
+                          <a href={`tel:${order.phone}`} className="action-btn-dashboard secondary-dark" style={{ textDecoration: 'none' }}>
+                            <Phone size={14} /> Call Customer
+                          </a>
+                          
+                          <button
+                            className="action-btn-dashboard secondary-dark"
+                            onClick={() => {
+                              if (order.maps_link) {
+                                window.open(order.maps_link, '_blank')
+                              } else {
+                                alert('No map link available for this order')
+                              }
+                            }}
+                            disabled={!order.maps_link || order.maps_link === 'Manual Location'}
+                          >
+                            <MapPin size={14} /> Google Maps
+                          </button>
+                        </div>
+
+                        {/* Workflow Transitions */}
+                        <div className="order-card-action-bar" onClick={(e) => e.stopPropagation()} style={{ borderTop: '1px solid rgba(255, 255, 255, 0.05)', paddingTop: '0.75rem' }}>
+                          {status === 'pending' && (
+                            <>
+                              <button
+                                className="action-btn-dashboard success-green"
+                                onClick={() => handleUpdateStatus(order.id, 'order', 'preparing')}
+                              >
+                                Accept Order
+                              </button>
+                              <button
+                                className="action-btn-dashboard secondary-dark"
+                                style={{ color: 'var(--danger)', borderColor: 'rgba(239, 68, 68, 0.2)' }}
+                                onClick={() => handleUpdateStatus(order.id, 'order', 'cancelled')}
+                              >
+                                Cancel Order
+                              </button>
+                            </>
                           )}
 
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.85rem', borderTop: '1px solid var(--border)', paddingTop: '0.4rem' }}>
-                            <span>Subtotal</span>
-                            <span>₹{selectedOrder.subtotal}</span>
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-                            <span>Parcel Charge</span>
-                            <span>₹{selectedOrder.packaging}</span>
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1rem', fontWeight: 'bold', color: '#fff', marginTop: '0.4rem' }}>
-                            <span>Grand Total</span>
-                            <span style={{ color: 'var(--accent)' }}>₹{selectedOrder.total}</span>
-                          </div>
-                        </div>
+                          {status === 'preparing' && (
+                            <>
+                              <button
+                                className="action-btn-dashboard success-green"
+                                onClick={() => handleUpdateStatus(order.id, 'order', 'out_for_delivery')}
+                              >
+                                Mark Out for Delivery
+                              </button>
+                              <button
+                                className="action-btn-dashboard secondary-dark"
+                                style={{ color: 'var(--danger)', borderColor: 'rgba(239, 68, 68, 0.2)' }}
+                                onClick={() => handleUpdateStatus(order.id, 'order', 'cancelled')}
+                              >
+                                Cancel Order
+                              </button>
+                            </>
+                          )}
 
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                          <div className="form-group">
-                            <label className="form-label">Payment Status</label>
-                            <select
-                              className="select-dark"
-                              style={{ width: '100%', height: '40px' }}
-                              value={selectedOrder.payment_status}
-                              onChange={(e) => handleUpdateStatus(selectedOrder.id, 'payment', e.target.value)}
+                          {status === 'out_for_delivery' && (
+                            <button
+                              className="action-btn-dashboard success-green"
+                              style={{ gridColumn: 'span 2' }}
+                              onClick={() => handleUpdateStatus(order.id, 'order', 'delivered')}
                             >
-                              <option value="pending">Pending</option>
-                              <option value="paid">Paid</option>
-                              <option value="failed">Failed</option>
-                            </select>
-                          </div>
-                          <div className="form-group">
-                            <label className="form-label">Order Status</label>
-                            <select
-                              className="select-dark"
-                              style={{ width: '100%', height: '40px' }}
-                              value={selectedOrder.order_status}
-                              onChange={(e) => handleUpdateStatus(selectedOrder.id, 'order', e.target.value)}
-                            >
-                              <option value="new">New</option>
-                              <option value="preparing">Preparing</option>
-                              <option value="ready">Ready</option>
-                              <option value="delivered">Delivered</option>
-                              <option value="cancelled">Cancelled</option>
-                            </select>
-                          </div>
-                        </div>
+                              Mark Delivered
+                            </button>
+                          )}
 
-                        <button
-                          className="btn btn-secondary"
-                          style={{ width: '100%', marginTop: '1.25rem' }}
-                          onClick={() => setSelectedOrder(null)}
-                        >
-                          Close Details
-                        </button>
+                          {status === 'delivered' && (
+                            <div className="status-text-badge" style={{ gridColumn: 'span 2', color: 'var(--success)', justifyContent: 'center' }}>
+                              ✅ Delivered
+                            </div>
+                          )}
+
+                          {status === 'cancelled' && (
+                            <div className="status-text-badge" style={{ gridColumn: 'span 2', color: 'var(--danger)', justifyContent: 'center' }}>
+                              ❌ Cancelled
+                            </div>
+                          )}
+                        </div>
                       </div>
+                    )
+                  })
+                )}
+              </section>
+
+              {/* Status change Toast alert */}
+              {statusToast && (
+                <div className="toast">
+                  <CheckCircle size={18} style={{ color: 'var(--success)' }} />
+                  <div>
+                    <div style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>{statusToast}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Live sound and Toast alert for new incoming orders */}
+              {newOrderToast && (
+                <div className="toast" style={{ border: '1px solid var(--success)' }}>
+                  <Bell size={18} style={{ color: 'var(--success)', animation: 'bounce 1s infinite' }} />
+                  <div>
+                    <div style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>New Order Received!</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>#{newOrderToast.id} from {newOrderToast.name}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Detailed view Modal */}
+              {selectedOrder && (
+                <div className="checkout-modal-overlay" onClick={() => setSelectedOrder(null)}>
+                  <div className="checkout-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '600px' }}>
+                    <div className="checkout-header">
+                      <h2 className="brand-title" style={{ fontSize: '1.1rem' }}>Order Details #{selectedOrder.id}</h2>
+                      <button onClick={() => setSelectedOrder(null)} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}>
+                        <X size={20} />
+                      </button>
+                    </div>
+                    <div className="checkout-body">
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem', paddingBottom: '1.25rem', borderBottom: '1px solid var(--border)' }}>
+                        <div>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Customer Details</span>
+                          <div style={{ fontWeight: 'bold', fontSize: '1.05rem', marginTop: '0.2rem' }}>{selectedOrder.customer_name}</div>
+                          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.25rem' }}>
+                            <Phone size={12} /> {selectedOrder.phone}
+                          </div>
+                        </div>
+                        <div>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Delivery Context</span>
+                          <div style={{ fontSize: '0.8rem', marginTop: '0.2rem' }}>Placed: {new Date(selectedOrder.created_at).toLocaleString()}</div>
+                          {selectedOrder.maps_link ? (
+                            <>
+                              <a href={selectedOrder.maps_link} target="_blank" rel="noopener noreferrer" className="link-maps" style={{ fontSize: '0.8rem', marginTop: '0.25rem' }}>
+                                <MapPin size={12} /> View Google Maps Link <ExternalLink size={10} />
+                              </a>
+                            </>
+                          ) : (
+                            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>No Location details provided</div>
+                          )}
+                        </div>
+                      </div>
+
+                      <h4 style={{ marginBottom: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Order Items Summary</h4>
+                      {renderOrderSummary(selectedOrder)}
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '1.25rem' }}>
+                        <div className="form-group">
+                          <label className="form-label">Payment Status</label>
+                          <select
+                            className="select-dark"
+                            style={{ width: '100%', height: '40px' }}
+                            value={selectedOrder.payment_status}
+                            onChange={(e) => handleUpdateStatus(selectedOrder.id, 'payment', e.target.value)}
+                          >
+                            <option value="pending">Pending</option>
+                            <option value="paid">Paid</option>
+                            <option value="failed">Failed</option>
+                          </select>
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label">Order Status</label>
+                          <select
+                            className="select-dark"
+                            style={{ width: '100%', height: '40px' }}
+                            value={selectedOrder.order_status}
+                            onChange={(e) => handleUpdateStatus(selectedOrder.id, 'order', e.target.value)}
+                          >
+                            <option value="pending">Pending</option>
+                            <option value="preparing">Preparing</option>
+                            <option value="out_for_delivery">Out for Delivery</option>
+                            <option value="delivered">Delivered</option>
+                            <option value="cancelled">Cancelled</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <button
+                        className="btn btn-secondary"
+                        style={{ width: '100%', marginTop: '1.25rem' }}
+                        onClick={() => setSelectedOrder(null)}
+                      >
+                        Close Details
+                      </button>
                     </div>
                   </div>
-                )}
-              </main>
+                </div>
+              )}
             </div>
           )}
         </div>
