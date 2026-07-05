@@ -40,6 +40,9 @@ interface SupabaseOrder {
   payment_status: string
   order_status: string
   maps_link: string
+  latitude?: number | null
+  longitude?: number | null
+  manual_address?: string | null
   created_at: string
 }
 
@@ -302,11 +305,8 @@ export default function App() {
   const [longitude, setLongitude] = useState<number | null>(null)
   const [locationLoading, setLocationLoading] = useState(false)
   const [locationError, setLocationError] = useState('')
-  const [houseNumber, setHouseNumber] = useState('')
-  const [street, setStreet] = useState('')
-  const [landmark, setLandmark] = useState('')
-  const [city, setCity] = useState('')
-  const [pincode, setPincode] = useState('')
+  const [manualAddress, setManualAddress] = useState('')
+  const [isManualCaptured, setIsManualCaptured] = useState(false)
 
   // Checkout Form
   const [customerName, setCustomerName] = useState('')
@@ -582,24 +582,8 @@ export default function App() {
         return
       }
     } else {
-      if (!houseNumber.trim()) {
-        alert('House / Flat Number is required for manual address.')
-        return
-      }
-      if (!street.trim()) {
-        alert('Street / Area is required for manual address.')
-        return
-      }
-      if (!city.trim()) {
-        alert('City is required.')
-        return
-      }
-      if (!pincode.trim()) {
-        alert('Pincode is required.')
-        return
-      }
-      if (!/^\d+$/.test(pincode.trim())) {
-        alert('Pincode must contain numbers only.')
+      if (!isManualCaptured || !manualAddress.trim()) {
+        alert('Please fill and confirm your manual delivery address.')
         return
       }
     }
@@ -610,27 +594,13 @@ export default function App() {
     const itemSummary = cart.map(i => `${i.quantity} x ${i.item.name}`).join(', ')
 
     // Format location details
-    let finalMapsLink = mapsLink
     let itemsPayload = [...cart]
 
     if (locationMode === 'manual') {
-      finalMapsLink = "Manual Location"
-      const formattedAddress = [
-        houseNumber.trim(),
-        street.trim(),
-        landmark.trim() ? landmark.trim() : null,
-        `${city.trim()} - ${pincode.trim()}`
-      ].filter(Boolean).join(', ')
-
       // Store address inside items JSONB payload
       itemsPayload.push({
         isAddressMetadata: true,
-        formattedAddress,
-        houseNumber: houseNumber.trim(),
-        street: street.trim(),
-        landmark: landmark.trim(),
-        city: city.trim(),
-        pincode: pincode.trim()
+        formattedAddress: manualAddress.trim()
       } as any)
     }
 
@@ -642,7 +612,10 @@ export default function App() {
       subtotal: subtotal,
       packaging: packagingFee,
       total: total,
-      maps_link: finalMapsLink
+      maps_link: locationMode === 'gps' ? mapsLink : null,
+      latitude: locationMode === 'gps' ? latitude : null,
+      longitude: locationMode === 'gps' ? longitude : null,
+      manual_address: locationMode === 'manual' ? manualAddress.trim() : null
     }
 
     try {
@@ -659,11 +632,8 @@ export default function App() {
       setLatitude(null)
       setLongitude(null)
       setMapsLink('')
-      setHouseNumber('')
-      setStreet('')
-      setLandmark('')
-      setCity('')
-      setPincode('')
+      setManualAddress('')
+      setIsManualCaptured(false)
       setLocationMode('gps')
       setIsCheckoutOpen(false)
       setIsCartOpen(false)
@@ -676,7 +646,8 @@ export default function App() {
           item_summary: data.item_summary,
           total: data.total,
           order_status: data.order_status,
-          maps_link: data.maps_link
+          maps_link: data.maps_link,
+          manual_address: data.manual_address
         }
         fetch(n8nWebhookUrl, {
           method: 'POST',
@@ -1226,6 +1197,25 @@ export default function App() {
                           </button>
                         </div>
                       </>
+                    ) : isManualCaptured ? (
+                      <div className="location-box success">
+                        <CheckCircle size={18} style={{ color: 'var(--success)', marginBottom: '0.25rem' }} />
+                        <div>
+                          <div style={{ fontWeight: 'bold', fontSize: '0.8rem', color: '#fff' }}>Manual Address Captured</div>
+                          <div className="location-text" style={{ marginTop: '0.35rem', fontWeight: 'bold', color: 'var(--text-secondary)' }}>Address:</div>
+                          <div className="location-text" style={{ whiteSpace: 'pre-line', wordBreak: 'break-word', marginTop: '0.15rem', lineHeight: '1.4' }}>
+                            {manualAddress.trim()}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          style={{ padding: '0.35rem 0.65rem', fontSize: '0.7rem', height: '28px', marginTop: '0.25rem' }}
+                          onClick={() => setIsManualCaptured(false)}
+                        >
+                          Change Address
+                        </button>
+                      </div>
                     ) : (
                       <div className="manual-location-form" style={{ padding: '1rem', backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '16px', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                         <div style={{ fontWeight: 'bold', fontSize: '0.85rem', color: '#fff', marginBottom: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
@@ -1233,82 +1223,36 @@ export default function App() {
                         </div>
 
                         <div className="form-group" style={{ marginBottom: 0 }}>
-                          <label className="form-label">House / Flat Number *</label>
-                          <input
-                            type="text"
+                          <label className="form-label">Delivery Address *</label>
+                          <textarea
                             className="form-input"
                             required
-                            value={houseNumber}
-                            onChange={(e) => setHouseNumber(e.target.value)}
-                            placeholder="e.g. Flat 104, Royal Crest"
-                            style={{ width: '100%' }}
+                            rows={8}
+                            value={manualAddress}
+                            onChange={(e) => setManualAddress(e.target.value)}
+                            placeholder={`House Number\nStreet\nArea\nLandmark\nCity\nPIN Code\n\nExample:\nHouse No. 42\n3rd Cross\nJP Nagar Phase 7\nNear Metro Station\nBengaluru 560078`}
+                            style={{ width: '100%', resize: 'vertical', minHeight: '150px', padding: '0.6rem', borderRadius: '8px', lineHeight: '1.4', backgroundColor: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff' }}
                           />
                         </div>
 
-                        <div className="form-group" style={{ marginBottom: 0 }}>
-                          <label className="form-label">Street / Area *</label>
-                          <input
-                            type="text"
-                            className="form-input"
-                            required
-                            value={street}
-                            onChange={(e) => setStreet(e.target.value)}
-                            placeholder="e.g. 5th Cross Road, Whitefield"
-                            style={{ width: '100%' }}
-                          />
-                        </div>
-
-                        <div className="form-group" style={{ marginBottom: 0 }}>
-                          <label className="form-label">Landmark (Optional)</label>
-                          <input
-                            type="text"
-                            className="form-input"
-                            value={landmark}
-                            onChange={(e) => setLandmark(e.target.value)}
-                            placeholder="e.g. Near HDFC Bank ATM"
-                            style={{ width: '100%' }}
-                          />
-                        </div>
-
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                          <div className="form-group" style={{ marginBottom: 0 }}>
-                            <label className="form-label">City *</label>
-                            <input
-                              type="text"
-                              className="form-input"
-                              required
-                              value={city}
-                              onChange={(e) => setCity(e.target.value)}
-                              placeholder="e.g. Bengaluru"
-                              style={{ width: '100%' }}
-                            />
-                          </div>
-                          <div className="form-group" style={{ marginBottom: 0 }}>
-                            <label className="form-label">Pincode *</label>
-                            <input
-                              type="text"
-                              className="form-input"
-                              required
-                              value={pincode}
-                              onChange={(e) => setPincode(e.target.value)}
-                              placeholder="e.g. 560066"
-                              style={{ width: '100%' }}
-                            />
-                          </div>
-                        </div>
-
-                        <div style={{ textAlign: 'center', marginTop: '0.5rem' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }}>
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            style={{ width: '100%', height: '36px', fontSize: '0.75rem', borderRadius: '50px' }}
+                            onClick={() => setIsManualCaptured(true)}
+                            disabled={!manualAddress.trim()}
+                          >
+                            Confirm Delivery Address
+                          </button>
                           <button
                             type="button"
                             className="btn btn-secondary"
                             style={{ width: '100%', height: '36px', fontSize: '0.75rem', borderRadius: '50px' }}
                             onClick={() => {
                               setLocationMode('gps');
-                              setHouseNumber('');
-                              setStreet('');
-                              setLandmark('');
-                              setCity('');
-                              setPincode('');
+                              setIsManualCaptured(false);
+                              setManualAddress('');
                             }}
                           >
                             Use GPS Location Instead
@@ -1339,12 +1283,13 @@ export default function App() {
                       disabled={
                         submittingOrder ||
                         (locationMode === 'gps' && (!latitude || !longitude)) ||
-                        (locationMode === 'manual' && (!houseNumber.trim() || !street.trim() || !city.trim() || !pincode.trim()))
+                        (locationMode === 'manual' && !isManualCaptured)
                       }
                     >
                       {submittingOrder ? 'Inserting Order...' :
                         (locationMode === 'gps' && (!latitude || !longitude)) ? 'Awaiting Coordinates' :
-                          'Place Order'}
+                          (locationMode === 'manual' && !isManualCaptured) ? 'Confirm Address Above' :
+                            'Place Order'}
                     </button>
                   </div>
                 </form>
