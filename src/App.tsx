@@ -421,7 +421,7 @@ export default function App() {
     try {
       const { data, error } = await client
         .from('orders')
-        .select('*')
+        .select('*, manual_address, latitude, longitude, maps_link')
         .order('created_at', { ascending: false })
       if (error) throw error
       setOrders(data || [])
@@ -622,7 +622,7 @@ export default function App() {
       const { data, error } = await client
         .from('orders')
         .insert(orderData)
-        .select()
+        .select('*, manual_address, latitude, longitude, maps_link')
         .single()
 
       if (error) throw error
