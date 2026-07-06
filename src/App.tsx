@@ -315,6 +315,14 @@ export default function App() {
   const [mapsLink, setMapsLink] = useState('')
   const [submittingOrder, setSubmittingOrder] = useState(false)
 
+  // Phone validation handler
+  const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const rawVal = e.target.value
+    const numericVal = rawVal.replace(/\D/g, '')
+    const truncatedVal = numericVal.slice(0, 10)
+    setPhone(truncatedVal)
+  }
+
   // Success Screen
   const [placedOrder, setPlacedOrder] = useState<any | null>(null)
 
@@ -574,6 +582,11 @@ export default function App() {
 
     if (!customerName || !phone) {
       alert('Please fill in your name and phone number.')
+      return
+    }
+
+    if (phone.length !== 10) {
+      alert('Please enter a valid 10-digit mobile number.')
       return
     }
 
@@ -1121,9 +1134,14 @@ export default function App() {
                       className="form-input"
                       required
                       value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      placeholder="e.g. +91 9876543210"
+                      onChange={handlePhoneChange}
+                      placeholder="10-digit mobile number"
                     />
+                    {phone.length > 0 && phone.length < 10 && (
+                      <span style={{ color: 'var(--danger)', fontSize: '0.75rem', marginTop: '0.25rem', display: 'block' }}>
+                        Please enter a valid 10-digit mobile number.
+                      </span>
+                    )}
                   </div>
 
                   {/* Location capture block */}
@@ -1277,6 +1295,7 @@ export default function App() {
                       style={{ width: '100%', padding: '0.85rem' }}
                       disabled={
                         submittingOrder ||
+                        phone.length !== 10 ||
                         (locationMode === 'gps' && (!latitude || !longitude)) ||
                         (locationMode === 'manual' && !isManualCaptured)
                       }
